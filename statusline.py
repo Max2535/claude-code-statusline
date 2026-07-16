@@ -76,6 +76,32 @@ sess_name = data.get("session_name") or ""
 version   = data.get("version") or ""
 cols      = int(os.environ.get("COLUMNS", 120))
 
+# ── Export state for other tools ──────────────────────────────────
+# The rate_limits above are the only local source of real plan usage: Claude Code
+# pushes them into this payload and nowhere else — no CLI flag, no state file, no
+# local API. Mirror them so tools outside Claude Code (Touch Bar widgets, tmux
+# bars, Raycast scripts) can read them too. Documented in the README.
+# Best effort — the status line must still render if any of this fails.
+def export_state():
+    # API-key users have no plan limits at all; leave any existing file alone
+    # rather than overwriting it with nulls.
+    if fh_pct is None and wd_pct is None:
+        return
+    state = {
+        "updated_at": int(time.time()),
+        "five_hour": {"used_percentage": fh_pct, "resets_at": fh_at},
+        "seven_day": {"used_percentage": wd_pct, "resets_at": wd_at},
+    }
+    dst = pathlib.Path.home() / ".claude" / "statusline-state.json"
+    try:
+        tmp = dst.with_suffix(f".{os.getpid()}.tmp")
+        tmp.write_text(json.dumps(state))
+        os.replace(tmp, dst)   # atomic — a reader never sees a half-written file
+    except Exception:
+        pass
+
+export_state()
+
 # ── Git status (cached 5 s by session_id to avoid lag) ───────────
 branch = ""; staged = modified = untracked = 0
 _tmp   = pathlib.Path(tempfile.gettempdir()) / f"cc-sl-git-{sess_id}"

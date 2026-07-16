@@ -77,6 +77,40 @@ Then restart Claude Code. The status line appears at the bottom of the interface
 
 ---
 
+## Exported state
+
+Claude Code hands `rate_limits` to a status line and to nothing else — there's no
+CLI flag, no state file, no local API that reports your plan usage. It's push-only,
+so anything outside Claude Code is shut out.
+
+To fix that, every render mirrors the two windows to `~/.claude/statusline-state.json`:
+
+```json
+{
+  "updated_at": 1784199500,
+  "five_hour": { "used_percentage": 30.0, "resets_at": 1784203100 },
+  "seven_day": { "used_percentage": 9.0,  "resets_at": 1784458700 }
+}
+```
+
+| Field | Meaning |
+|-------|---------|
+| `updated_at` | Unix seconds, when this file was written |
+| `used_percentage` | `0`–`100`, share of that window's limit used |
+| `resets_at` | Unix seconds, when that window resets |
+
+Written atomically, so a reader never sees a half-written file. Read it from a Touch
+Bar widget, a tmux bar, a Raycast script — anything that wants your real usage.
+
+Judge staleness by **`resets_at`, not `updated_at`**: the percentage doesn't decay
+while Claude Code is closed, it only stops meaning anything once its own window
+resets. Each window expires independently.
+
+> **Note:** `rate_limits` reaches Claude.ai subscribers only, and only after the
+> first API response of a session. With an API key, this file is never written.
+
+---
+
 ## Uninstall
 
 ```bash

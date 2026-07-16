@@ -33,6 +33,10 @@ fi
 TEST_PATH="${INSTALL_DIR}/statusline-test.json"
 [[ -f "$TEST_PATH" ]] && rm "$TEST_PATH" && ok "Removed ${TEST_PATH}"
 
+# ── Remove exported state ─────────────────────────────────────────
+STATE_PATH="${INSTALL_DIR}/statusline-state.json"
+[[ -f "$STATE_PATH" ]] && rm "$STATE_PATH" && ok "Removed ${STATE_PATH}"
+
 # ── Remove statusLine from settings.json ─────────────────────────
 if [[ -f "$SETTINGS_PATH" ]]; then
     # Detect Python
