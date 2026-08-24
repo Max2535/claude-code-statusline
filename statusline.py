@@ -8,13 +8,41 @@ Install : bash <(curl -sSL https://raw.githubusercontent.com/Max2535/claude-code
 """
 import json, sys, os, time, datetime, re, subprocess, pathlib, tempfile
 
-# Force UTF-8 stdout (Windows consoles default to legacy codepages e.g. cp874)
-try:
-    sys.stdout.reconfigure(encoding="utf-8")
-except Exception:
-    pass
+# Force UTF-8 on BOTH streams. Windows defaults to the legacy codepage (cp874
+# here), which decodes non-ASCII stdin into lone surrogates; printing those to a
+# UTF-8 stdout then raises and kills the whole status line. Claude Code always
+# sends UTF-8 JSON, so decode it as such.
+for _s in (sys.stdin, sys.stdout):
+    try:
+        _s.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
 
-data = json.load(sys.stdin)
+_RAW = sys.stdin.read()
+
+# ── Crash breadcrumb ──────────────────────────────────────────────
+# Claude Code swallows statusline stderr, so an uncaught exception renders as
+# "no status line at all" with no clue why. Never fail silently again.
+_LOG = pathlib.Path(tempfile.gettempdir()) / "cc-sl-error.log"
+
+def _excepthook(t, v, tb):
+    import traceback
+    try:
+        with _LOG.open("a", encoding="utf-8", errors="replace") as fh:
+            fh.write(f"{datetime.datetime.now():%Y-%m-%d %H:%M:%S}\n"
+                     + "".join(traceback.format_exception(t, v, tb))
+                     + f"stdin: {_RAW[:2000]}\n\n")
+    except Exception:
+        pass
+    try:
+        print(f"\033[31m  ⚠ statusline: {type(v).__name__}: {v}\033[0m"
+              f"  \033[2m{_LOG}\033[0m")
+    except Exception:
+        pass
+
+sys.excepthook = _excepthook
+
+data = json.loads(_RAW)
 
 # ── ANSI ──────────────────────────────────────────────────────────
 R = "\033[0m"
@@ -128,10 +156,25 @@ def progress_bar(pct, w=28):
     c   = "\033[31m" if pct >= 90 else "\033[33m" if pct >= 70 else "\033[34m"
     return f"{c}{'█' * f}{R}\033[2m{'░' * e}{R}"
 
+def _epoch(ep):
+    """resets_at arrives as epoch int, epoch ms, numeric str, or ISO-8601."""
+    if ep is None or ep == "": return None
+    try:
+        v = float(ep)
+        return int(v / 1000) if v > 1e11 else int(v)   # ms vs s
+    except (TypeError, ValueError):
+        pass
+    try:
+        s = str(ep).replace("Z", "+00:00")
+        return int(datetime.datetime.fromisoformat(s).timestamp())
+    except Exception:
+        return None
+
 def fmt_countdown(ep):
     """~3 hr 53 min"""
+    ep = _epoch(ep)
     if not ep: return ""
-    d = max(0, int(ep) - int(time.time()))
+    d = max(0, ep - int(time.time()))
     if d == 0: return "now"
     h, r = divmod(d, 3600); m = r // 60
     if h >= 24: return f"~{h // 24}d {h % 24}h"
@@ -139,8 +182,9 @@ def fmt_countdown(ep):
 
 def fmt_reset_day(ep):
     """Tue 3:59 AM"""
+    ep = _epoch(ep)
     if not ep: return ""
-    dt  = datetime.datetime.fromtimestamp(int(ep))
+    dt  = datetime.datetime.fromtimestamp(ep)
     day = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"][dt.weekday()]
     h12 = dt.hour % 12 or 12
     ap  = "AM" if dt.hour < 12 else "PM"
