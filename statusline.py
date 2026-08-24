@@ -8,6 +8,12 @@ Install : bash <(curl -sSL https://raw.githubusercontent.com/Max2535/claude-code
 """
 import json, sys, os, time, datetime, re, subprocess, pathlib, tempfile
 
+# Force UTF-8 stdout (Windows consoles default to legacy codepages e.g. cp874)
+try:
+    sys.stdout.reconfigure(encoding="utf-8")
+except Exception:
+    pass
+
 data = json.load(sys.stdin)
 
 # ── ANSI ──────────────────────────────────────────────────────────
@@ -75,32 +81,6 @@ sess_id   = (data.get("session_id") or "")[:8]
 sess_name = data.get("session_name") or ""
 version   = data.get("version") or ""
 cols      = int(os.environ.get("COLUMNS", 120))
-
-# ── Export state for other tools ──────────────────────────────────
-# The rate_limits above are the only local source of real plan usage: Claude Code
-# pushes them into this payload and nowhere else — no CLI flag, no state file, no
-# local API. Mirror them so tools outside Claude Code (Touch Bar widgets, tmux
-# bars, Raycast scripts) can read them too. Documented in the README.
-# Best effort — the status line must still render if any of this fails.
-def export_state():
-    # API-key users have no plan limits at all; leave any existing file alone
-    # rather than overwriting it with nulls.
-    if fh_pct is None and wd_pct is None:
-        return
-    state = {
-        "updated_at": int(time.time()),
-        "five_hour": {"used_percentage": fh_pct, "resets_at": fh_at},
-        "seven_day": {"used_percentage": wd_pct, "resets_at": wd_at},
-    }
-    dst = pathlib.Path.home() / ".claude" / "statusline-state.json"
-    try:
-        tmp = dst.with_suffix(f".{os.getpid()}.tmp")
-        tmp.write_text(json.dumps(state))
-        os.replace(tmp, dst)   # atomic — a reader never sees a half-written file
-    except Exception:
-        pass
-
-export_state()
 
 # ── Git status (cached 5 s by session_id to avoid lag) ───────────
 branch = ""; staged = modified = untracked = 0
@@ -256,3 +236,68 @@ elif sess_id: inf.append(dim(f"#{sess_id}"))
 if version:   inf.append(dim(f"v{version}"))
 
 print("  " + "  │  ".join(inf))
+
+# ══════════════════════════════════════════════════════════════════
+# LINE 6  Plugins & skills used this session
+# ══════════════════════════════════════════════════════════════════
+def _transcript_path():
+    p = data.get("transcript_path")
+    if p and os.path.exists(p):
+        return p
+    sid = data.get("session_id") or ""
+    if not (sid and cwd):
+        return None
+    slug = re.sub(r"[^A-Za-z0-9]", "-", cwd)
+    p = os.path.expanduser(f"~/.claude/projects/{slug}/{sid}.jsonl")
+    return p if os.path.exists(p) else None
+
+def _split_ref(ref):
+    """'ponytail:ponytail' -> ('ponytail', 'ponytail');  'grilling' -> (None, 'grilling')"""
+    return tuple(ref.split(":", 1)) if ":" in ref else (None, ref)
+
+def _scan_transcript(path):
+    plugins, skills = [], []
+    def add(pl, sk):
+        if pl and pl not in plugins: plugins.append(pl)
+        if sk: skills.append(sk)
+    with open(path, encoding="utf-8") as fh:
+        for line in fh:
+            try: ent = json.loads(line)
+            except Exception: continue
+            content = (ent.get("message") or {}).get("content")
+            if isinstance(content, list):
+                for blk in content:
+                    if not (isinstance(blk, dict) and blk.get("type") == "tool_use"): continue
+                    nm = blk.get("name") or ""
+                    if nm == "Skill":
+                        ref = (blk.get("input") or {}).get("skill") or ""
+                        if ref: add(*_split_ref(ref))
+                    elif nm.startswith("mcp__plugin_"):
+                        m = re.match(r"mcp__plugin_(.+?)_[^_]*__", nm)
+                        if m: add(m.group(1), None)
+            elif isinstance(content, str) and "<command-message>" in content and "<command-name>" in content:
+                # builtin CLI commands emit <command-name> first; skill commands emit <command-message> first
+                if content.index("<command-name>") < content.index("<command-message>"): continue
+                m = re.search(r"<command-name>/([^<]+)</command-name>", content)
+                if m: add(*_split_ref(m.group(1).strip()))
+    return plugins, skills
+
+def _short(s, n=20):
+    return s if len(s) <= n else s[:n - 1] + "…"
+
+try:
+    _tp = _transcript_path()
+    _plugins, _skills = _scan_transcript(_tp) if _tp else ([], [])
+except Exception:
+    _plugins, _skills = [], []
+
+_recent = []
+for _s in reversed(_skills):            # newest first, deduped
+    if _s not in _recent: _recent.append(_s)
+    if len(_recent) == 3: break
+
+if _plugins or _recent:
+    _row = []
+    if _plugins: _row.append(f"\033[35m🧩 {', '.join(_short(p) for p in _plugins)}{R}")
+    if _recent:  _row.append(cyan(f"🎯 {', '.join(_short(s) for s in _recent)}"))
+    print("  " + "  │  ".join(_row))
